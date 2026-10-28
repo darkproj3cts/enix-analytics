@@ -6,7 +6,9 @@
 
 ## Live-демо
 
-Деплой на Streamlit Community Cloud: будет здесь после первого push.
+[enix-analytics.streamlit.app](https://enix-analytics.streamlit.app)
+
+Если ссылка открывается с задержкой или с экраном «get this app back up» — Streamlit Cloud усыпляет free-apps при простое. Нужно 30–60 секунд на пробуждение.
 
 ## Стек
 
