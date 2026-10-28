@@ -47,11 +47,18 @@ SELECT
         COALESCE(m.gross_margin_rub, 0)
         / NULLIF(asq.avg_qty * acpu.avg_cost, 0)
     , 2) AS gmroi,
+    -- Классификация:
+    --   нет запаса (avg_qty = 0) → "распродан" (не паразит!)
+    --   маржа отрицательная → "паразит" (замораживает капитал И теряет деньги)
+    --   GMROI >= 3 → "отлично"
+    --   1-3 → "норма"
+    --   0-1 → "слабо"
     CASE
+        WHEN COALESCE(asq.avg_qty, 0) = 0 THEN 'распродан'
+        WHEN COALESCE(m.gross_margin_rub, 0) < 0 THEN 'паразит'
         WHEN m.gross_margin_rub / NULLIF(asq.avg_qty * acpu.avg_cost, 0) >= 3 THEN 'отлично'
         WHEN m.gross_margin_rub / NULLIF(asq.avg_qty * acpu.avg_cost, 0) >= 1 THEN 'норма'
-        WHEN m.gross_margin_rub / NULLIF(asq.avg_qty * acpu.avg_cost, 0) >= 0 THEN 'слабо'
-        ELSE 'паразит'
+        ELSE 'слабо'
     END AS gmroi_tier
 FROM sku sk
 LEFT JOIN margin_by_sku     m    ON m.sku_id    = sk.sku_id
