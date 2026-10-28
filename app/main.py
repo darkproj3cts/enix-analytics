@@ -534,7 +534,11 @@ def dim_values():
 
 @st.cache_data
 def period_bounds():
-    row = get_con().execute("SELECT MIN(day), MAX(day) FROM v_pnl_sku_day").fetchone()
+    # Берём напрямую из sales, а не из v_pnl_sku_day, чтобы границы периода
+    # не зависели от реализации витрины (меньше хрупкости).
+    row = get_con().execute(
+        "SELECT MIN(CAST(sale_date AS DATE)), MAX(CAST(sale_date AS DATE)) FROM sales"
+    ).fetchone()
     return row[0], row[1]
 
 

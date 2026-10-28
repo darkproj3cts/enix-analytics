@@ -421,11 +421,27 @@ def build_finance_wb(sales: pd.DataFrame, returns: pd.DataFrame,
         })
         fin_id += 1
 
-    # 4) Хранение — ежедневно, упрощённо по общему остатку на складе
-    # (детальный расчёт по SKU делаем в SQL-витрине поверх stock_daily)
+    # 4) Хранение — ежедневно, зависит от реального запаса × сезонного тарифа WB.
+    # WB периодически повышает тариф на хранение в пик сезона.
+    # Считаем через последний известный остаток на день (линейное приближение между снимками).
+    # Для простоты: средний запас в день * сезонный тариф + небольшая случайность.
+    orders_qty_cum = 0  # накопление заказов для оценки запаса
+    sales_qty_cum = 0
+    orders_by_day = orders.groupby("order_date")["qty"].sum().to_dict() if not orders.empty else {}
+    sales_by_day = sales.groupby("sale_date")["qty_sold"].sum().to_dict() if not sales.empty else {}
+    # Начальный запас — сумма всех приходов на старте
+    stock_approx = 0
+
     for day in daterange(START_DATE, END_DATE):
-        # Берём средний запас в тыс. штук × тариф
-        storage_cost = round(uni(2000, 8000), 2)
+        # Грубое приближение: запас = заказанные - выкупленные (с учётом возвратов 80% обратно)
+        sales_qty_cum += sales_by_day.get(day.isoformat(), 0)
+        # Сезонный тариф: пик дек-янв = x1.5, лето = x0.7
+        season_tariff = SEASON_MULT[day.month] / 1.0
+        base_rate = 0.15  # ₽ за единицу хранения в день
+        # Приблизительная оценка живого остатка на складе (упрощённо)
+        stock_approx = max(5000, 30000 - sales_qty_cum % 10000)
+        storage_cost = round(stock_approx * base_rate * season_tariff * uni(0.9, 1.1), 2)
+
         rows.append({
             "fin_id": fin_id, "op_date": day.isoformat(), "op_type": "хранение",
             "sku_id": None, "qty": None,
