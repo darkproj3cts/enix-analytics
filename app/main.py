@@ -563,9 +563,10 @@ def build_where(date_col: str = "day") -> str:
     return "WHERE " + " AND ".join(conds) if conds else ""
 
 
-def fmt_rub(x: float, suffix: str = "") -> str:
-    if pd.isna(x):
+def fmt_rub(x, suffix: str = "") -> str:
+    if x is None or pd.isna(x):
         return "—"
+    x = float(x)
     if abs(x) >= 1e9:
         return f"{x / 1e9:.2f} млрд{suffix}"
     if abs(x) >= 1e6:
@@ -573,6 +574,20 @@ def fmt_rub(x: float, suffix: str = "") -> str:
     if abs(x) >= 1e3:
         return f"{x / 1e3:.0f} тыс{suffix}"
     return f"{x:.0f}{suffix}"
+
+
+def safe_num(x, default: float = 0.0) -> float:
+    """SUM в SQL возвращает NULL при пустой выборке, pandas → NaN.
+    NaN truthy в Python, поэтому `x or 0` не работает."""
+    if x is None or pd.isna(x):
+        return default
+    return float(x)
+
+
+def fmt_int(x) -> str:
+    if x is None or pd.isna(x):
+        return "—"
+    return f"{int(x):,}".replace(",", " ")
 
 
 def fmt_pct(x: float) -> str:
@@ -646,11 +661,19 @@ def render_overview():
         FROM v_pnl_sku_day {where}
     """).iloc[0]
 
-    rev = kpi["revenue"] or 0
-    mgn = kpi["margin"] or 0
-    cogs = kpi["cogs"] or 0
-    ads = kpi["ads"] or 0
-    qty = kpi["qty_sold"] or 0
+    rev  = safe_num(kpi["revenue"])
+    mgn  = safe_num(kpi["margin"])
+    cogs = safe_num(kpi["cogs"])
+    ads  = safe_num(kpi["ads"])
+    qty  = safe_num(kpi["qty_sold"])
+
+    if rev == 0 and qty == 0:
+        alert("warn",
+              "<strong>По выбранным фильтрам данных нет.</strong> "
+              "Проверьте комбинацию — возможно модель не из выбранной категории, "
+              "или такого размера/цвета нет в ассортименте.")
+        return
+
     margin_pct = (mgn / rev * 100) if rev else 0
     drr = (ads / rev * 100) if rev else 0
     aov = rev / qty if qty else 0
@@ -660,7 +683,7 @@ def render_overview():
     c2.metric("Валовая маржа", fmt_rub(mgn, " ₽"), fmt_pct(margin_pct))
     c3.metric("Себестоимость", fmt_rub(cogs, " ₽"))
     c4.metric("Реклама", fmt_rub(ads, " ₽"), f"ДРР {fmt_pct(drr)}")
-    c5.metric("Выкуплено, шт", f"{int(qty):,}".replace(",", " "))
+    c5.metric("Выкуплено, шт", fmt_int(qty))
     c6.metric("Средний чек", fmt_rub(aov, " ₽"))
 
     st.markdown("")
