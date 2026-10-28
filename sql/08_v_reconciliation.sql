@@ -9,6 +9,10 @@
 -- Если diff_pct > 0.5% — алерт.
 -- Это та витрина, после которой основатель начинает доверять системе
 -- "по деньгам".
+--
+-- Отсекаются неполные крайние недели (где начало/конец данных попадает
+-- в середину ISO-недели). Иначе получаем вечные ALERT: удержания есть,
+-- выплат ещё нет.
 -- =====================================================================
 
 CREATE OR REPLACE VIEW v_reconciliation AS
@@ -36,34 +40,47 @@ weeks AS (
     SELECT week FROM fin_week
     UNION
     SELECT week FROM pay_week
+),
+weeks_filtered AS (
+    SELECT w.week
+    FROM weeks w
+    JOIN sales_week sw ON sw.week = w.week
+    JOIN fin_week   fw ON fw.week = w.week
+    WHERE sw.revenue_sales >=
+          (SELECT AVG(revenue_sales) FROM sales_week) * 0.1
+),
+computed AS (
+    SELECT
+        w.week,
+        COALESCE(sw.revenue_sales,  0) AS revenue_sales,
+        COALESCE(fw.wb_deductions,  0) AS wb_deductions,
+        COALESCE(sw.revenue_sales, 0) + COALESCE(fw.wb_deductions, 0) AS expected_payment,
+        COALESCE(pw.actual_payment, 0) AS actual_payment
+    FROM weeks_filtered w
+    LEFT JOIN sales_week sw ON sw.week = w.week
+    LEFT JOIN fin_week   fw ON fw.week = w.week
+    LEFT JOIN pay_week   pw ON pw.week = w.week
+),
+with_diff AS (
+    SELECT *,
+        actual_payment - expected_payment AS diff_rub,
+        CASE WHEN expected_payment = 0 THEN NULL
+             ELSE 100.0 * (actual_payment - expected_payment) / expected_payment
+        END AS diff_pct
+    FROM computed
 )
 SELECT
-    w.week,
-    ROUND(COALESCE(sw.revenue_sales,  0), 2) AS revenue_sales,
-    ROUND(COALESCE(fw.wb_deductions,  0), 2) AS wb_deductions,
-    ROUND(COALESCE(sw.revenue_sales, 0) + COALESCE(fw.wb_deductions, 0), 2) AS expected_payment,
-    ROUND(COALESCE(pw.actual_payment, 0), 2) AS actual_payment,
-    ROUND(
-        COALESCE(pw.actual_payment, 0)
-        - (COALESCE(sw.revenue_sales, 0) + COALESCE(fw.wb_deductions, 0))
-    , 2) AS diff_rub,
-    ROUND(
-        100.0 * (
-            COALESCE(pw.actual_payment, 0)
-            - (COALESCE(sw.revenue_sales, 0) + COALESCE(fw.wb_deductions, 0))
-        ) / NULLIF(COALESCE(sw.revenue_sales, 0) + COALESCE(fw.wb_deductions, 0), 0)
-    , 3) AS diff_pct,
+    week,
+    ROUND(revenue_sales,   2) AS revenue_sales,
+    ROUND(wb_deductions,   2) AS wb_deductions,
+    ROUND(expected_payment, 2) AS expected_payment,
+    ROUND(actual_payment,   2) AS actual_payment,
+    ROUND(diff_rub,         2) AS diff_rub,
+    ROUND(diff_pct,         3) AS diff_pct,
     CASE
-        WHEN ABS(
-            100.0 * (
-                COALESCE(pw.actual_payment, 0)
-                - (COALESCE(sw.revenue_sales, 0) + COALESCE(fw.wb_deductions, 0))
-            ) / NULLIF(COALESCE(sw.revenue_sales, 0) + COALESCE(fw.wb_deductions, 0), 0)
-        ) > 0.5 THEN 'ALERT: расхождение > 0,5%'
+        WHEN diff_pct IS NULL THEN 'нет данных'
+        WHEN ABS(diff_pct) > 0.5 THEN 'ALERT: расхождение > 0,5%'
         ELSE 'OK'
     END AS status
-FROM weeks w
-LEFT JOIN sales_week sw ON sw.week = w.week
-LEFT JOIN fin_week   fw ON fw.week = w.week
-LEFT JOIN pay_week   pw ON pw.week = w.week
-ORDER BY w.week;
+FROM with_diff
+ORDER BY week;

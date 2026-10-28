@@ -26,7 +26,6 @@ totals AS (
         SUM(storage_alloc)                       AS storage,
         SUM(acceptance_alloc)                    AS acceptance,
         SUM(fine_alloc)                          AS fine,
-        SUM(ads_spend)                           AS ads_total,
         SUM(revenue_after_spp)                   AS revenue_total
     FROM v_pnl_sku_day
 ),
