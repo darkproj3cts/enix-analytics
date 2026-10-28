@@ -1,0 +1,8 @@
+streamlit>=1.66
+duckdb>=1.0
+pandas>=2.0
+numpy>=1.26
+plotly>=5.17
+streamlit-option-menu>=0.3
+streamlit-aggrid>=1.0
+streamlit-extras>=0.4
