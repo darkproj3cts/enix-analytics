@@ -1092,11 +1092,45 @@ with st.sidebar:
                   min_value=d_min, max_value=d_max,
                   key="period", format="DD.MM.YYYY")
 
+    # Каскадные фильтры: категория → модель → размер → цвет
     dims = dim_values()
+
+    sel_cats   = st.session_state.get("categories", [])
+    sel_models = st.session_state.get("models", [])
+    sel_sizes  = st.session_state.get("sizes", [])
+    sel_colors = st.session_state.get("colors", [])
+
+    # Доступные опции по иерархии
+    scope = dims
+    if sel_cats:
+        scope = scope[scope["category"].isin(sel_cats)]
+    model_options = sorted(scope["model_name"].unique())
+
+    # Очистка выпавших выборов (если юзер поменял категорию)
+    valid_models = [m for m in sel_models if m in model_options]
+    if valid_models != sel_models:
+        st.session_state["models"] = valid_models
+
+    scope2 = scope
+    if valid_models:
+        scope2 = scope2[scope2["model_name"].isin(valid_models)]
+    size_options = sorted(scope2["size"].unique())
+    valid_sizes = [s for s in sel_sizes if s in size_options]
+    if valid_sizes != sel_sizes:
+        st.session_state["sizes"] = valid_sizes
+
+    scope3 = scope2
+    if valid_sizes:
+        scope3 = scope3[scope3["size"].isin(valid_sizes)]
+    color_options = sorted(scope3["color"].unique())
+    valid_colors = [c for c in sel_colors if c in color_options]
+    if valid_colors != sel_colors:
+        st.session_state["colors"] = valid_colors
+
     st.multiselect("Категория", sorted(dims["category"].unique()), key="categories")
-    st.multiselect("Модель", sorted(dims["model_name"].unique()), key="models")
-    st.multiselect("Размер", sorted(dims["size"].unique()), key="sizes")
-    st.multiselect("Цвет", sorted(dims["color"].unique()), key="colors")
+    st.multiselect("Модель",    model_options,                     key="models")
+    st.multiselect("Размер",    size_options,                      key="sizes")
+    st.multiselect("Цвет",      color_options,                     key="colors")
 
     st.markdown("---")
     st.caption(
