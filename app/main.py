@@ -543,10 +543,12 @@ def period_bounds():
 # =====================================================================
 
 def quote_list(values):
-    return ",".join(f"'{v}'" for v in values)
+    # Экранируем одинарную кавычку в значениях (SQL '' = экранированная ')
+    return ",".join("'" + str(v).replace("'", "''") + "'" for v in values)
 
 
 def build_where(date_col: str = "day") -> str:
+    """Полный WHERE: период + атрибуты SKU (для витрин с колонкой day и dim)."""
     conds = []
     period = st.session_state.get("period")
     if period and isinstance(period, tuple) and len(period) == 2:
@@ -561,6 +563,59 @@ def build_where(date_col: str = "day") -> str:
         if vals:
             conds.append(f"{col} IN ({quote_list(vals)})")
     return "WHERE " + " AND ".join(conds) if conds else ""
+
+
+def sku_filter_subquery() -> str:
+    """Возвращает '(SELECT sku_id FROM sku WHERE ...)' под текущие фильтры SKU-атрибутов.
+    Если фильтров нет — возвращает None (вызывающий код не добавляет WHERE)."""
+    conds = []
+    for col, key in [
+        ("category", "categories"),
+        ("model_name", "models"),
+        ("size", "sizes"),
+        ("color", "colors"),
+    ]:
+        vals = st.session_state.get(key)
+        if vals:
+            conds.append(f"{col} IN ({quote_list(vals)})")
+    if not conds:
+        return None
+    return f"(SELECT sku_id FROM sku WHERE {' AND '.join(conds)})"
+
+
+def sku_scope_where(table_alias: str = "") -> str:
+    """WHERE только по SKU-атрибутам (без периода). Для витрин без колонки day.
+    Если фильтров нет — пустая строка."""
+    sub = sku_filter_subquery()
+    if not sub:
+        return ""
+    prefix = f"{table_alias}." if table_alias else ""
+    return f"WHERE {prefix}sku_id IN {sub}"
+
+
+def period_active() -> bool:
+    """Применён ли пользователем фильтр по периоду (отличен от полного диапазона)."""
+    period = st.session_state.get("period")
+    if not period or not isinstance(period, tuple) or len(period) != 2:
+        return False
+    d_min, d_max = period_bounds()
+    return period[0] != d_min or period[1] != d_max
+
+
+def sku_filter_active() -> bool:
+    return any(st.session_state.get(k) for k in ("categories", "models", "sizes", "colors"))
+
+
+def filter_hint(supports_period: bool, supports_sku: bool):
+    """Показывает баннер если выбран фильтр, не применимый к текущей вкладке."""
+    msgs = []
+    if period_active() and not supports_period:
+        msgs.append("период — агрегат за всю историю данных")
+    if sku_filter_active() and not supports_sku:
+        msgs.append("фильтры по SKU (категория/модель/размер/цвет) — агрегат по всей компании")
+    if msgs:
+        alert("info", "Выбранные фильтры не применяются к этой вкладке: " +
+              "; ".join(msgs) + ".")
 
 
 def fmt_rub(x, suffix: str = "") -> str:
@@ -650,6 +705,8 @@ def render_overview():
     page_header("Обзор",
                 "Ключевые цифры компании за выбранный период и что болит прямо сейчас.")
 
+    filter_hint(supports_period=True, supports_sku=True)
+
     where = build_where()
     kpi = q(f"""
         SELECT
@@ -716,15 +773,20 @@ def render_overview():
     with cR:
         section("Что болит прямо сейчас")
 
-        oos = q("""SELECT COUNT(*) AS cnt FROM v_turnover
-                   WHERE days_of_stock < 30 AND avg_daily_sales_60d > 0""").iloc[0]["cnt"]
-        illiquid = q("""SELECT COUNT(*) AS cnt FROM v_turnover
-                        WHERE stock_tier = 'неликвид'""").iloc[0]["cnt"]
-        parasites = q("""SELECT COUNT(*) AS cnt, SUM(avg_inventory_rub) AS inv
-                         FROM v_gmroi WHERE gmroi_tier = 'паразит'""").iloc[0]
-        bad_ads = q("""SELECT COUNT(*) AS cnt, SUM(ads_rub) AS ads
+        sub = sku_filter_subquery()
+        sku_cond = f"sku_id IN {sub}" if sub else "1=1"
+
+        oos = q(f"""SELECT COUNT(*) AS cnt FROM v_turnover
+                   WHERE {sku_cond}
+                     AND days_of_stock < 30 AND avg_daily_sales_60d > 0""").iloc[0]["cnt"]
+        illiquid = q(f"""SELECT COUNT(*) AS cnt FROM v_turnover
+                        WHERE {sku_cond} AND stock_tier = 'неликвид'""").iloc[0]["cnt"]
+        parasites = q(f"""SELECT COUNT(*) AS cnt, SUM(avg_inventory_rub) AS inv
+                         FROM v_gmroi WHERE {sku_cond} AND gmroi_tier = 'паразит'""").iloc[0]
+        bad_ads = q(f"""SELECT COUNT(*) AS cnt, SUM(ads_rub) AS ads
                        FROM v_unit_economics
-                       WHERE ads_efficiency_tier IN ('дорогая', 'убыточная')""").iloc[0]
+                       WHERE {sku_cond}
+                         AND ads_efficiency_tier IN ('дорогая', 'убыточная')""").iloc[0]
 
         alert("warn",
               f"<strong>{int(oos)} SKU</strong> уйдут в OOS в ближайшие 30 дней — "
@@ -740,6 +802,7 @@ def render_overview():
 
 def render_pnl():
     page_header("P&L", "Структура доходов и затрат по моделям и SKU.")
+    filter_hint(supports_period=True, supports_sku=True)
     where = build_where()
 
     section("По моделям")
@@ -812,13 +875,20 @@ def render_pnl():
 def render_unit():
     page_header("Юнит-экономика",
                 "Экономика на 1 заказ и 1 выкуп. Подсветка SKU, где реклама съедает маржу.")
+    filter_hint(supports_period=False, supports_sku=True)
 
     tier = st.radio(
         "Эффективность рекламы",
         options=["все", "здоровая", "дорогая", "убыточная", "без рекламы"],
         horizontal=True,
     )
-    where_tier = "" if tier == "все" else f"WHERE ads_efficiency_tier = '{tier}'"
+    sub = sku_filter_subquery()
+    conds = []
+    if sub:
+        conds.append(f"sku_id IN {sub}")
+    if tier != "все":
+        conds.append(f"ads_efficiency_tier = '{tier}'")
+    where_tier = "WHERE " + " AND ".join(conds) if conds else ""
 
     ue = q(f"""
         SELECT article AS "Артикул", model_name AS "Модель",
@@ -843,11 +913,13 @@ def render_unit():
     cL, cR = st.columns(2)
     with cL:
         section("Распределение SKU по эффективности рекламы")
-        dist = q("""
+        sku_where = sku_scope_where()
+        dist = q(f"""
             SELECT ads_efficiency_tier AS tier,
                    COUNT(*)             AS sku_count,
                    ROUND(SUM(ads_rub)/1e6, 2) AS ads_mln
-            FROM v_unit_economics GROUP BY ads_efficiency_tier
+            FROM v_unit_economics {sku_where}
+            GROUP BY ads_efficiency_tier
         """)
         fig = px.bar(
             dist, x="tier", y="ads_mln", text="sku_count",
@@ -868,10 +940,13 @@ def render_unit():
 
     with cR:
         section("Маржа SKU vs ДРР")
-        scatter = q("""
+        sub = sku_filter_subquery()
+        extra_scatter = f"AND sku_id IN {sub}" if sub else ""
+        scatter = q(f"""
             SELECT model_name, size, color,
                    margin_pct_of_revenue, drr_pct, revenue_rub, ads_efficiency_tier
-            FROM v_unit_economics WHERE revenue_rub > 0
+            FROM v_unit_economics
+            WHERE revenue_rub > 0 {extra_scatter}
         """)
         fig = px.scatter(
             scatter, x="drr_pct", y="margin_pct_of_revenue",
@@ -893,29 +968,35 @@ def render_unit():
 def render_stock():
     page_header("Запасы и оборачиваемость",
                 "Где заморожен капитал и какие SKU уходят в дефицит.")
+    filter_hint(supports_period=False, supports_sku=True)
+
+    sub = sku_filter_subquery()
+    sku_where = sku_scope_where()
+    sku_and = f"AND sku_id IN {sub}" if sub else ""
 
     cL, cR = st.columns(2)
     with cL:
         section("GMROI по тирам")
-        gm = q("""
+        gm = q(f"""
             SELECT gmroi_tier AS "Тир",
                    COUNT(*)   AS "SKU",
                    ROUND(SUM(avg_inventory_rub)/1e6, 2) AS "Запас, млн ₽",
                    ROUND(SUM(gross_margin_rub)/1e6, 2)  AS "Маржа, млн ₽"
-            FROM v_gmroi GROUP BY gmroi_tier
+            FROM v_gmroi {sku_where}
+            GROUP BY gmroi_tier
             ORDER BY SUM(avg_inventory_rub) DESC
         """)
-        aggrid_table(gm, height=200, pin_col="Тир")
+        aggrid_table(gm, height=240, pin_col="Тир")
 
         section("SKU-паразиты и слабые")
-        parasites = q("""
+        parasites = q(f"""
             SELECT article AS "Артикул", model_name AS "Модель",
                    size AS "Р-р", color AS "Цвет",
                    avg_stock_units AS "Ср. запас, шт",
                    ROUND(avg_inventory_rub/1000, 0) AS "Запас, тыс ₽",
                    gmroi AS "GMROI"
             FROM v_gmroi
-            WHERE gmroi_tier IN ('паразит', 'слабо')
+            WHERE gmroi_tier IN ('паразит', 'слабо') {sku_and}
             ORDER BY avg_inventory_rub DESC
             LIMIT 15
         """)
@@ -923,17 +1004,18 @@ def render_stock():
 
     with cR:
         section("Оборачиваемость по тирам")
-        turn = q("""
+        turn = q(f"""
             SELECT stock_tier AS "Тир",
                    COUNT(*)   AS "SKU",
                    ROUND(AVG(days_of_stock), 0) AS "Ср. дней запаса"
-            FROM v_turnover GROUP BY stock_tier
+            FROM v_turnover {sku_where}
+            GROUP BY stock_tier
             ORDER BY AVG(days_of_stock) ASC NULLS LAST
         """)
-        aggrid_table(turn, height=200, pin_col="Тир")
+        aggrid_table(turn, height=240, pin_col="Тир")
 
         section("SKU в риске OOS в ближайший месяц")
-        oos = q("""
+        oos = q(f"""
             SELECT article AS "Артикул", model_name AS "Модель",
                    size AS "Р-р",
                    avg_daily_sales_60d AS "Прод/день",
@@ -941,7 +1023,7 @@ def render_stock():
                    days_of_stock       AS "Дней запаса",
                    projected_oos_date  AS "Дата OOS"
             FROM v_turnover
-            WHERE days_of_stock < 30 AND avg_daily_sales_60d > 0
+            WHERE days_of_stock < 30 AND avg_daily_sales_60d > 0 {sku_and}
             ORDER BY days_of_stock ASC
             LIMIT 15
         """)
@@ -951,6 +1033,7 @@ def render_stock():
 def render_leak():
     page_header("Где течёт маржа",
                 "Разложение потерь по причинам и конкретные рычаги оптимизации.")
+    filter_hint(supports_period=False, supports_sku=False)
 
     section("Структура потерь за год")
     leak = q("""
@@ -976,8 +1059,11 @@ def render_leak():
     aggrid_table(display_leak, height=320, pin_col="Статья")
 
     section("Кандидаты на отключение рекламы")
-    st.caption("SKU, где реклама съедает более половины маржи до её учёта.")
-    bad_ads = q("""
+    st.caption("SKU, где реклама съедает более половины маржи до её учёта. "
+               "Эта таблица учитывает фильтры по SKU.")
+    sub = sku_filter_subquery()
+    sku_and = f"AND sku_id IN {sub}" if sub else ""
+    bad_ads = q(f"""
         SELECT article AS "Артикул", model_name AS "Модель",
                size AS "Р-р", color AS "Цвет",
                ROUND(revenue_rub/1000, 0)           AS "Выручка, тыс ₽",
@@ -987,15 +1073,15 @@ def render_leak():
                ads_to_margin_pct                    AS "Реклама/маржа, %",
                ads_efficiency_tier                  AS "Тир"
         FROM v_unit_economics
-        WHERE ads_efficiency_tier IN ('дорогая', 'убыточная')
+        WHERE ads_efficiency_tier IN ('дорогая', 'убыточная') {sku_and}
         ORDER BY ads_rub DESC
     """)
     aggrid_table(bad_ads, height=420, pin_col="Артикул")
 
-    total_save = q("""
+    total_save = q(f"""
         SELECT ROUND(SUM(ads_rub)/1e6, 2) AS save_mln
         FROM v_unit_economics
-        WHERE ads_efficiency_tier IN ('дорогая', 'убыточная')
+        WHERE ads_efficiency_tier IN ('дорогая', 'убыточная') {sku_and}
     """).iloc[0]["save_mln"] or 0
     alert("ok",
           f"Отключение рекламы на этих SKU даст экономию до "
@@ -1006,6 +1092,7 @@ def render_leak():
 def render_recon():
     page_header("Сверка WB vs банк",
                 "Расчётная выплата по финотчёту vs фактически пришедшее на расчётный счёт.")
+    filter_hint(supports_period=False, supports_sku=False)
 
     summary = q("""
         SELECT
