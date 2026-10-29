@@ -686,7 +686,7 @@ def aggrid_table(df: pd.DataFrame, height: int = 420, pin_col: str | None = None
         height=height,
         theme="alpine",
         fit_columns_on_grid_load=False,
-        allow_unsafe_jscode=True,
+        allow_unsafe_jscode=False,  # JsCode не используем — отключаем для безопасности
         update_mode=GridUpdateMode.NO_UPDATE,
     )
 
@@ -833,7 +833,8 @@ def render_pnl():
                    ROUND(SUM(gross_margin_rub)/1e3, 0)  AS "Маржа, тыс ₽"
             FROM v_pnl_sku_day {where}
             GROUP BY article, model_name, size
-            ORDER BY SUM(gross_margin_rub) ASC
+            HAVING SUM(qty_sold) > 0
+            ORDER BY SUM(gross_margin_rub) ASC NULLS LAST
             LIMIT 10
         """)
         aggrid_table(bottom, height=380, pin_col="Артикул")
@@ -847,7 +848,8 @@ def render_pnl():
                    ROUND(SUM(gross_margin_rub)/1e6, 2)  AS "Маржа, млн ₽"
             FROM v_pnl_sku_day {where}
             GROUP BY article, model_name, size
-            ORDER BY SUM(gross_margin_rub) DESC
+            HAVING SUM(qty_sold) > 0
+            ORDER BY SUM(gross_margin_rub) DESC NULLS LAST
             LIMIT 10
         """)
         aggrid_table(top, height=380, pin_col="Артикул")

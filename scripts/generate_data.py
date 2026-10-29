@@ -421,27 +421,18 @@ def build_finance_wb(sales: pd.DataFrame, returns: pd.DataFrame,
         })
         fin_id += 1
 
-    # 4) Хранение — ежедневно, зависит от реального запаса × сезонного тарифа WB.
-    # WB периодически повышает тариф на хранение в пик сезона.
-    # Считаем через последний известный остаток на день (линейное приближение между снимками).
-    # Для простоты: средний запас в день * сезонный тариф + небольшая случайность.
-    orders_qty_cum = 0  # накопление заказов для оценки запаса
-    sales_qty_cum = 0
-    orders_by_day = orders.groupby("order_date")["qty"].sum().to_dict() if not orders.empty else {}
-    sales_by_day = sales.groupby("sale_date")["qty_sold"].sum().to_dict() if not sales.empty else {}
-    # Начальный запас — сумма всех приходов на старте
-    stock_approx = 0
+    # 4) Хранение — ежедневно, зависит от сезонного тарифа WB и среднего запаса.
+    # WB регулярно повышает тариф на хранение в пик сезона (октябрь-февраль).
+    # Для MVP: средний запас на складе ~ 15000 единиц × сезонный тариф × шум.
+    # (В production нужно считать через fact_stock_daily, но для синтетики достаточно.)
+    STORAGE_BASE_UNITS = 15000   # базовый средний запас на складе, шт
+    STORAGE_RATE_RUB = 0.15      # базовый тариф, ₽ за единицу в день
 
     for day in daterange(START_DATE, END_DATE):
-        # Грубое приближение: запас = заказанные - выкупленные (с учётом возвратов 80% обратно)
-        sales_qty_cum += sales_by_day.get(day.isoformat(), 0)
-        # Сезонный тариф: пик дек-янв = x1.5, лето = x0.7
-        season_tariff = SEASON_MULT[day.month] / 1.0
-        base_rate = 0.15  # ₽ за единицу хранения в день
-        # Приблизительная оценка живого остатка на складе (упрощённо)
-        stock_approx = max(5000, 30000 - sales_qty_cum % 10000)
-        storage_cost = round(stock_approx * base_rate * season_tariff * uni(0.9, 1.1), 2)
-
+        season_tariff = SEASON_MULT[day.month]
+        storage_cost = round(
+            STORAGE_BASE_UNITS * STORAGE_RATE_RUB * season_tariff * uni(0.9, 1.1), 2
+        )
         rows.append({
             "fin_id": fin_id, "op_date": day.isoformat(), "op_type": "хранение",
             "sku_id": None, "qty": None,

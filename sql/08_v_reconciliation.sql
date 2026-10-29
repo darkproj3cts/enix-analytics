@@ -19,7 +19,8 @@ CREATE OR REPLACE VIEW v_reconciliation AS
 WITH
 sales_week AS (
     SELECT strftime(CAST(sale_date AS DATE), '%G-W%V') AS week,
-           SUM(revenue_after_spp) AS revenue_sales
+           SUM(revenue_after_spp)                      AS revenue_sales,
+           COUNT(DISTINCT CAST(sale_date AS DATE))     AS days_with_sales
     FROM sales
     GROUP BY strftime(CAST(sale_date AS DATE), '%G-W%V')
 ),
@@ -41,13 +42,14 @@ weeks AS (
     UNION
     SELECT week FROM pay_week
 ),
+-- Отсекаем неполные крайние недели: оставляем только недели где было
+-- продаж минимум 5 дней из 7. Это надёжнее фильтра "revenue > % от среднего",
+-- который хрупок к сезонности.
 weeks_filtered AS (
     SELECT w.week
     FROM weeks w
     JOIN sales_week sw ON sw.week = w.week
-    JOIN fin_week   fw ON fw.week = w.week
-    WHERE sw.revenue_sales >=
-          (SELECT AVG(revenue_sales) FROM sales_week) * 0.1
+    WHERE sw.days_with_sales >= 5
 ),
 computed AS (
     SELECT
